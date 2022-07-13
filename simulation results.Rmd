@@ -1,0 +1,230 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r include=FALSE}
+load("stan_results.RDA")
+library(loo); 
+library(rstan); library(tidyverse); library(bayesplot)
+library(latex2exp)
+
+load("all_data.RDA")
+all_data = all_data %>% select(-non_hispanic, -married, -other)
+
+xi.large = all_data[, 8:ncol(all_data)] 
+xi.small = xi.large %>% select(-asian, -male_only, -no_car)
+```
+
+```{r message=FALSE}
+log_lik1 <- extract_log_lik(m1.fit, parameter_name = "lp__")
+log_lik2 <- extract_log_lik(m2.fit, parameter_name = "lp__")
+(waic1 <- waic(log_lik1))
+(waic2 <- waic(log_lik2))
+m1=waic1$estimates %>% as.data.frame() %>%  select(Model1=Estimate) 
+m2=waic2$estimates %>% as.data.frame() %>%  select(Model2=Estimate) 
+```
+```{r}
+m1 %>% cbind(m2)
+```
+
+
+
+```{r}
+beta = rstan::extract(m1.fit)$beta
+colnames(beta) = c("intercept", colnames(xi.large))
+beta %>% head()
+```
+
+
+
+```{r}
+beta %>% as.data.frame() %>% 
+  gather() %>% 
+  filter(key!="intercept") %>% 
+  ggplot(aes(x=value, fill=key)) + geom_density(alpha=0.5, show.legend = FALSE) + 
+  geom_vline(xintercept=0, lty=2)+
+  facet_wrap(~key, scales="free_y") + theme_bw() + theme(text = element_text(size = 16)) 
+```
+
+```{r}
+tbl = mcmc_intervals_data(m1.fit, pars=paste0("beta[", 2:10, "]"), point_est = "mean", prob=0.95, prob_outer = 0.99) %>% 
+  mutate(Coef = colnames(xi.large)) %>% 
+  mutate(l=l %>% round(4), m = m %>% round(4), h= h %>% round(4)) %>% 
+  select(Coef, CI.l=l, Mean=m, CI.h=h) %>% 
+  arrange(Coef) 
+
+library(flextable); library(webshot)
+tbl=flextable(tbl)
+save_as_image(tbl, "img/beta_table.png")
+```
+
+
+```{r}
+ theta = rstan::extract(m1.fit)$theta
+# theta %>% as.data.frame() %>% 
+#   gather() %>% 
+#   ggplot(aes(x=value, group=key)) + 
+#   geom_boxplot(outlier.shape = NA)
+```
+
+```{r}
+state = sub(".*\\b(Minnesota|South Dakota|North Dakota|Wisconsin)\\b.*", "\\1", all_data$county)
+```
+
+```{r}
+all_data %>% head()
+```
+
+
+```{r}
+all_data %>% 
+  mutate(area_effects = colMeans(theta), state=state) %>% 
+  ggplot(aes(x=log(povPercSE), y=area_effects, color=state)) + geom_point()
+```
+
+```{r}
+sigma_v = rstan::extract(m1.fit)$sigma_v
+data.frame(sigma_v) %>% ggplot(aes(x=sigma_v)) + geom_density(fill="lightblue") + theme_bw() +
+  xlab(TeX("$\\sigma_v")) + ylab("Posterior Density") + theme(text = element_text(size = 20)) 
+```
+
+
+```{r}
+sig_mean = mean(sigma_v^2)
+sig_25qt = quantile(sigma_v^2, 0.025)
+sig_75qt = quantile(sigma_v^2, 0.975)
+
+weight = function(sqrtD, sigma2_v = sig_mean){ 
+  (sqrtD^2)/(sqrtD^2 + sigma2_v) 
+}
+
+weight2 = function(sqrtD, sigma2_v = sig_mean){ 
+  1-(sqrtD^2)/(sqrtD^2 + sigma2_v) 
+}
+#curve(weight, from = 0, to=0.1, xlab=TeX("SE $(D_i)$"), ylab=TeX("Weight of $\\hat{Y}_i$"))
+
+ggplot(data.frame(x=c(0, 0.1)), aes(x)) + 
+  #stat_function(fun=weight, color="orange") + 
+  stat_function(fun=weight2, color="navy") + 
+  stat_function(fun=function(x) weight2(x, sig_25qt), color="navy", lty=3) + 
+  stat_function(fun=function(x) weight2(x, sig_75qt), color="navy", lty=3) +
+  ylab(TeX("Weight on Direct Est.")) + xlab(TeX("SE $(\\sqrt{D_i})$")) +
+  geom_vline(xintercept=0.01971, lty=2, color="orange") +
+  geom_hline(yintercept=0.5, lty=2, color="orange") +
+  theme_bw()+ theme(text = element_text(size = 20)) 
+```
+
+
+
+
+```{r}
+N = all_data %>% nrow()
+gls = lm(povPerc~ white+ native + black  +  hispanic +
+          female_only + degree + no_car + asian + male_only,
+         data=all_data, weights = 1/(all_data$povPercSE^2))
+gls %>% summary()
+```
+
+
+```{r}
+FH= colMeans(theta)
+GLS = gls$fitted.values
+y=all_data$povPerc
+
+data.frame(GLS, FH,  y) %>% 
+  gather(key="model", value="estimate", -y) %>% 
+  ggplot(aes(x=log(y), y=log(estimate), color=model)) + geom_point(alpha=0.9) +
+  geom_abline(slope = 1, lty=2, alpha=0.5) + theme_bw()
+```
+
+```{r}
+
+data.frame(GLS, FH,  y, se = all_data$povPercSE) %>% 
+  gather(key="model", value="estimate", -y, -se) %>% 
+ ggplot(aes(x=se, y=y/estimate, color=model)) + geom_point() + 
+  geom_hline(yintercept = 1, alpha=0.5, lty=2) + theme_bw() + 
+  theme(text = element_text(size = 20)) 
+
+```
+
+
+
+
+```{r}
+FH_capped = ifelse(FH > y + 4*sd(all_data$povPercSE),  y + 4*sd(all_data$povPercSE), FH)
+FH_capped = ifelse(FH_capped < y - 4*sd(all_data$povPercSE),  y - 4*sd(all_data$povPercSE), FH_capped)
+
+data.frame(GLS, FH_capped,  y, se = all_data$povPercSE) %>% 
+  gather(key="model", value="estimate", -y, -se) %>% 
+  filter(model=="FH_capped") %>% 
+ ggplot(aes(x=se, y=y/estimate)) + geom_point(color="navy") + 
+  geom_hline(yintercept = 1, alpha=0.5, lty=2)  + ylim(c(0.75, 1.60))
+
+```
+
+```{r}
+data.frame(GLS, FH,  y, se = all_data$povPercSE) %>% 
+  gather(key="model", value="estimate", -y, -se) %>% 
+  filter(model=="FH") %>% 
+ ggplot(aes(x=se, y=y/estimate)) + geom_point(color="navy") + 
+  geom_hline(yintercept = 1, alpha=0.5, lty=2) + ylim(c(0.75, 1.60))+
+  theme_bw()+ 
+  theme(text = element_text(size = 20)) 
+```
+
+```{r}
+
+data.frame(GLS, FH_capped,  y) %>% 
+  gather(key="model", value="estimate", -y) %>% 
+  ggplot(aes(x=log(y), y=log(estimate), color=model)) + geom_point(alpha=0.9) +
+  geom_abline(slope = 1, lty=2, alpha=0.5) + theme_bw()
+```
+
+
+Where do the biggest differences between the direct estimates and FH model occur?
+
+```{r}
+library(usmap)
+d1 = data.frame(FH_capped,  y, se = all_data$povPercSE) %>% mutate(ratio=y/FH_capped)
+df = all_data %>% select(fips) %>% mutate(ratio =d1$ratio)
+
+plot_usmap("counties", values = "ratio",
+                  include = c("ND", "SD", "MN", "WI"), 
+           data=df) + scale_fill_viridis_c() + theme(legend.position="bottom")
+
+
+```
+
+```{r}
+pOut = all_data %>% select(fips, county) %>% mutate(ratio = d1$ratio)%>% 
+    filter( ratio > quantile(ratio, 0.95)   ) %>% arrange(desc(ratio))
+nOut = all_data %>% select(fips, county) %>% mutate(ratio = d1$ratio)%>% 
+    filter( ratio < quantile(ratio, 0.05)  ) %>% arrange(desc(ratio))
+
+pos.outliers = all_data %>% 
+  filter(fips %in% pOut$fips) 
+
+neg.outliers = all_data %>% 
+  filter(fips %in% nOut$fips) 
+
+dat = all_data[8:ncol(all_data)] %>% gather() %>% mutate(value=log(value))
+
+neg.means = neg.outliers[8:ncol(pos.outliers)] %>% 
+  gather() %>% group_by(key) %>% summarise(`negative (FH > y)` =log(mean(value) ))
+
+pos.means = pos.outliers[8:ncol(pos.outliers)] %>% 
+  gather() %>% group_by(key) %>% summarise(`positive (FH < y)`=log(mean(value)))
+
+outlier.means = pos.means %>% left_join(neg.means, by="key") %>% gather(key="outlier_type", value="mean", -key)
+dat=dat %>% left_join(outlier.means, by="key")
+```
+
+```{r}
+dat %>% 
+  ggplot(aes(x=value)) + geom_density(alpha=0.5) + 
+  facet_wrap(~key, scales = "free") +theme_bw() +
+  geom_vline(aes(xintercept=mean, col=outlier_type))  +
+  xlab("log(covariates)") 
+```
+

@@ -1,0 +1,196 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r include=FALSE}
+library(sae)
+library(tidycensus)
+library(tidyverse)
+
+census_api_key("9fb9cc8584a00b7006e7550c685129b65240b9aa")
+```
+
+```{r}
+load("all_data.RDA")
+all_data = all_data %>% select(-non_hispanic, -married, -other)
+
+xi.large = all_data[, 8:ncol(all_data)] 
+xi.small = xi.large %>% select(-asian, -male_only, -no_car)
+```
+
+
+```{r}
+N = all_data %>% nrow()
+gls = lm(povPerc~ white+ native + black  +  hispanic +
+          female_only + degree + no_car + asian + male_only,
+         data=all_data, weights = 1/(all_data$povPercSE^2))
+gls %>% summary()
+```
+
+
+```{r}
+xi = xi.large %>% as.matrix()
+resultFH <- eblupFH(all_data$povPerc ~ xi, all_data$povPercSE^2, method="FH")
+resultFH$fit$goodness
+
+resultFH$fit$estcoef
+```
+
+```{r}
+resultFH$fit$refvar
+```
+
+
+```{r}
+data.frame(GLS = gls$fitted.values, y=all_data$povPerc, EB_FH=resultFH$eblup) %>% 
+  gather(key="model", value="estimate", -y) %>% 
+  ggplot(aes(x=log(y), y=log(estimate), color=model),  alpha=0.5) + geom_point() + 
+  geom_abline(slope = 1, lty=2, alpha=0.5) + theme_bw()
+```
+
+```{r}
+data.frame(gls = gls$fitted.values, y=all_data$povPerc, pop=all_data$pop,
+           se = all_data$povPercSE, fh=resultFH$eblup) %>% 
+        gather(key="model", value="estimate", -se, -y, -pop) %>% 
+  ggplot(aes(x=-log(pop), y=y/estimate, color=model)) + geom_point() + 
+  geom_hline(yintercept = 1, alpha=0.5, lty=2) + theme_bw()
+
+```
+
+
+
+
+
+
+```{r}
+data.frame(gls = gls$fitted.values, y=all_data$povPerc, 
+           se = all_data$povPercSE, fh=resultFH$eblup) %>% 
+        gather(key="model", value="estimate", -se, -y) %>% 
+  #filter(model=="fh") %>% 
+  ggplot(aes(x=se, y=y/estimate, color=model)) + geom_point() + 
+  geom_hline(yintercept = 1, alpha=0.5, lty=2) + theme_bw()
+
+```
+
+```{r}
+data.frame(gls = gls$fitted.values, y=all_data$povPerc, 
+           se = all_data$povPercSE, fh=resultFH$eblup) %>% 
+        gather(key="model", value="estimate", -se, -y) %>% 
+  filter(model=="fh") %>% 
+  ggplot(aes(x=se, y=y/estimate, color=model)) + geom_point() + 
+  geom_hline(yintercept = 1, alpha=0.5, lty=2) + theme_bw()
+
+```
+
+
+
+# Mapping 
+
+Where do people live? 
+```{r}
+library(usmap)
+df = all_data %>% select(fips, pop, povPerc, povPercSE) %>% 
+  mutate(l_pop =log(pop), l_povPerc=log(povPerc), l_povPercSE = log(povPercSE))
+
+plot_usmap("counties", values = "l_pop",
+                  include = c("ND", "SD", "MN", "WI"), 
+           data=df) + scale_fill_viridis_c() + theme(legend.position="bottom")
+```
+
+```{r}
+df = all_data %>% select(fips, pop, povPerc, povPercSE) %>% 
+  mutate(l_povPerc=log(povPerc), l_povPercSE = log(povPercSE), ratio=povPercSE/povPerc)
+
+plot_usmap("counties", values = "l_povPerc",
+                  include = c("ND", "SD", "MN", "WI"), 
+           data=df) + scale_fill_viridis_c() + theme(legend.position="bottom")
+```
+
+
+```{r}
+df = all_data %>% select(fips, pop, povPerc, povPercSE) %>% 
+  mutate(l_povPerc=log(povPerc), l_povPercSE = log(povPercSE))
+
+plot_usmap("counties", values = "povPercSE",
+                  include = c("ND", "SD", "MN", "WI"), 
+           data=df) + scale_fill_viridis_c() + theme(legend.position="bottom")
+```
+
+High SE/povPERC ratio
+
+```{r}
+df = all_data %>% select(fips, pop, povPerc, povPercSE) %>% 
+  mutate(l_povPerc=log(povPerc), l_povPercSE = log(povPercSE), ratio=povPercSE/povPerc)
+
+plot_usmap("counties", values = "ratio",
+                  include = c("ND", "SD", "MN", "WI"), 
+           data=df) + scale_fill_viridis_c() + theme(legend.position="bottom")
+```
+
+
+
+```{r}
+test = data.frame(fips=all_data$fips, county=all_data$county,  gls = gls$fitted.values, y=all_data$povPerc, 
+            se = all_data$povPercSE, fh=resultFH$eblup)%>% 
+     gather(key="model", value="estimate", -se, -y, -fips, -county) %>% 
+     filter(model=="fh") %>%  
+    mutate(ratio = y/estimate) %>%
+  select(fips, ratio)
+
+plot_usmap(regions = "counties", values = "ratio", data=test,
+                  include = c("ND", "SD")) + scale_fill_viridis_c() + theme(legend.position="bottom")
+```
+
+```{r}
+df = all_data %>% select(fips, pop, povPerc, povPercSE) %>% 
+  mutate(l_povPerc=log(povPerc), l_povPercSE = log(povPercSE))
+
+plot_usmap("counties", values = "povPercSE",
+                  include = c("ND", "SD"), 
+           data=df) + scale_fill_viridis_c() + theme(legend.position="bottom")
+```
+
+
+
+# counties of interest (probably?)
+
+TODO: FIND OUT WHERE THE DISAGREEMENTS WITH THE MODEL AND THE DIRECT ESTIMATES OCURR. 
+Summarize differences between those places and the rest of the dataset. Is there a general trend?
+
+```{r}
+s = data.frame(fips=all_data$fips, county=all_data$county,  gls = gls$fitted.values, y=all_data$povPerc, 
+            se = all_data$povPercSE, fh=resultFH$eblup)%>% 
+     gather(key="model", value="estimate", -se, -y, -fips, -county) %>% 
+     filter(model=="fh") %>% 
+    mutate(ratio = y/estimate) %>% 
+    filter( ratio > quantile(ratio, 0.99) | ratio < quantile(ratio, 0.01)  ) %>% arrange(desc(ratio))
+
+s
+```
+
+
+46095  Mellette County, South Dakota
+46117   Stanley County, South Dakota
+
+
+46049     Faulk County, South Dakota
+4 46071   Jackson County, South Dakota
+5 46089 McPherson County, South Dakota
+
+
+```{r}
+df = all_data %>% 
+  #filter(fips %in% c(46049, 46095, 46071, 46089)) 
+  filter(fips %in% s$fips) 
+df %>% select(-pov, -SE)
+```
+
+```{r}
+s
+```
+
+```{r}
+all_data %>% summary()
+```
+
